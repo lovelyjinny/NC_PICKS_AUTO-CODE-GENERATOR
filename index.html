@@ -4650,12 +4650,13 @@ function buildProductCode(v, serial){
   const sm = v.seasonMonth;
   const seasonNum = (SEASON_MAP[sm] || 9).toString();
   const yearSeason = yr + seasonNum;
+  const monthCode = String(sm||'').trim().toUpperCase();   // 계절월(한 글자): 연번 뒤에 붙음
   const gender = inferGender(v.materialGroup);
   const brandAbbr = b && b.abbr;
   const colorCode = convertColor(v.color, brandAbbr);
   const sizeGroup = inferSizeGroup(v.materialGroup);
   const sizeCode = convertSize(sizeGroup, v.sizeValue, brandAbbr);
-  return (b.abbr||'??') + itemCode + yearSeason + gender + pad3(serial) + colorCode + sizeCode;
+  return (b.abbr||'??') + itemCode + yearSeason + gender + pad3(serial) + monthCode + colorCode + sizeCode;
 }
 
 function inferGender(mc){
@@ -4752,7 +4753,8 @@ function generatePreview(){
     const brandAbbrLocal = c.brand && c.brand.abbr;
     const colorCode = convertColor(v.color, brandAbbrLocal);
     const sizeCode = convertSize(sizeGroup, v.sizeValue, brandAbbrLocal);
-    const code = (c.brand.abbr||'??') + it + ys + g + pad3(serial) + colorCode + sizeCode;
+    const monthCode = String(v.seasonMonth||'').trim().toUpperCase();   // 계절월: 연번 뒤에 붙음
+    const code = (c.brand.abbr||'??') + it + ys + g + pad3(serial) + monthCode + colorCode + sizeCode;
 
     output.push({
       상품코드: code,

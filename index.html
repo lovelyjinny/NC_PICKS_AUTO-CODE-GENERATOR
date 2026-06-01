@@ -1231,6 +1231,19 @@ function dismissRestoreBanner(){
 const SEASON_MAP = {'1':4,'2':4,'3':1,'4':1,'5':1,'6':2,'7':2,'8':2,'9':3,
                     'T':3,'N':3,'D':4,'B':1,'S':2,'F':3,'W':4,'A':9};
 const SEASON_MONTHS = ['1','2','3','4','5','6','7','8','9','T','N','D','B','S','F','W','A'];
+// MD입력시중가 환산용 고정 환율 + 배수
+const FX_RATE = {EUR: 1700, USD: 1550};   // 해외 오더 권장소비자가(RRP) → 원화 환산 환율(고정)
+const RETAIL_MARGIN = 1.3;                 // 환산가에 곱하는 배수
+// MD입력시중가 자동 계산: 국내=오리지널가 그대로, 해외=RRP×환율×1.3(천원 반올림). 계산 불가 시 null
+function computeRetailPrice(v){
+  const src = parseFloat(v.origPrice);
+  if(!src || src <= 0) return null;                       // 오리지널가/RRP 원본 없음 → 수기 입력
+  const dom = state.common.vendor && state.common.vendor.isDomestic;
+  if(dom) return Math.round(src);                         // 국내: 오리지널가 그대로(원 단위)
+  const rate = FX_RATE[String(state.common.currency||'').toUpperCase()];
+  if(!rate) return null;                                  // EUR/USD 외 통화 → 수기 입력
+  return Math.round(src * rate * RETAIL_MARGIN / 1000) * 1000;  // 1,000원 단위 반올림
+}
 const SIZE_TOP = {'XS':'085','S':'090','M':'095','L':'100','XL':'105','2XL':'110','3XL':'115','4XL':'120','5XL':'125'};
 // 사이즈 정규화 (OPR 일재고통합 룰 + v7 매핑표 기반)
 const SIZE_NORM = {
@@ -3467,6 +3480,24 @@ async function handleOfferFile(file){
       if(h.includes('수량') || (h.includes('TOTAL') && h.includes('QTY')) || h.includes('합계')){ qtyTotalCol=i; break; }
     }
     if(buyPriceCols.length) colMap.buyPrice = buyPriceCols[0];
+
+    // MD입력시중가 원본 컬럼(오리지널가/RRP/권장소비자가) — TOTAL/DISCOUNT/합계/할인 등은 제외
+    const RETAIL_KEYS = ['오리지널가','오리지날가','오리지널가격','오리지널 가격','권장소비자가격','권장소비자가','정상소비자가','소비자가','정상가','RRP','RSMP','MSRP','SRP','RETAIL PRICE','RETAIL'];
+    const RETAIL_EXCL = ['TOTAL','합계','소계','DISCOUNT','할인','%','OFF','수량','QTY','코드','CODE','NAME','명'];
+    let retailSrcCol = -1;
+    for(const k of RETAIL_KEYS){
+      const kUp = k.toUpperCase();
+      for(let i=0;i<headers.length;i++){
+        const hUp = String(headers[i]||'').trim().toUpperCase();
+        if(!hUp || !hUp.includes(kUp)) continue;
+        if(RETAIL_EXCL.some(x => hUp.includes(x))) continue;   // TOTAL RRP / DISCOUNT RRP 등 제외
+        if(i === colMap.buyPrice) continue;                    // 구매가 컬럼과 중복 방지
+        retailSrcCol = i; break;
+      }
+      if(retailSrcCol >= 0) break;
+    }
+    colMap.retailSrc = retailSrcCol;
+
     let backCalcCount = 0;
     // 행에서 구매가 산출: ①역제안가 → ②총금액÷수량 역산 → ③기타 직접단가
     function pickBuyPrice(row){
@@ -3753,6 +3784,7 @@ async function handleOfferFile(file){
         productName: pname,
         color: pcolor,
         buyPrice: pickBuyPrice(row),
+        origPrice: retailSrcCol>=0 ? (parseFloat(row[retailSrcCol])||0) : 0,  // 오리지널가/RRP 원본
         origin: String(row[colMap.origin]||'').trim(),
         itemCategory: rawItem,     // 오퍼시트 원본값 (표에 표시)
         itemCode: itemCode,        // 매핑된 2자리 코드 (MC 마지막 2자리로 사용)
@@ -3763,6 +3795,9 @@ async function handleOfferFile(file){
         selected: true,
       };
       if(!base.origCode) continue;
+      // MD입력시중가 자동 계산 (국내=오리지널가, 해외=RRP×환율×1.3). 계산되면 자동 채움 표시
+      const _autoRetail = computeRetailPrice(base);
+      if(_autoRetail != null){ base.retailPrice = _autoRetail; base._retailAuto = true; }
 
       // 사이즈 매트릭스 펼치기
       if(sizeMatrixCols.length > 0){
@@ -3836,6 +3871,12 @@ async function handleOfferFile(file){
       const hname = headers[colMap.buyPrice]||'?';
       mapInfo.push('구매가=' + (isRatio ? '원가율 컬럼('+hname+') × 시중가' : hname));
     } else mapInfo.push('구매가=❌없음');
+    // MD입력시중가 원본 + 계산방식 안내
+    if(colMap.retailSrc>=0){
+      const rname = headers[colMap.retailSrc]||'?';
+      const isDom = state.common.vendor && state.common.vendor.isDomestic;
+      mapInfo.push('MD시중가=' + rname + (isDom ? ' 그대로(국내)' : ' × 환율 × 1.3, 천원반올림(해외)'));
+    } else mapInfo.push('MD시중가=수기입력(원본 컬럼 없음)');
     if(sizeMatrixCols.length>0) mapInfo.push('사이즈매트릭스='+sizeMatrixCols.map(s=>s.label).join('/'));
     if(colMap.item>=0) mapInfo.push('아이템='+(headers[colMap.item]||'?')+(itemRecognizedCount>0?'(인식 '+itemRecognizedCount+'행)':''));
     else if(itemRecognizedCount>0) mapInfo.push('아이템=상품명에서 추출('+itemRecognizedCount+'행)');
@@ -3959,7 +4000,7 @@ function renderTable(){
   updateCounts();
 }
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
-function upd(i, f, v){ state.variants[i][f] = v; updateCounts(); checkAlarms(); }
+function upd(i, f, v){ if(f === 'retailPrice') state.variants[i]._retailAuto = false; state.variants[i][f] = v; updateCounts(); checkAlarms(); }
 
 // 판매가 변경 → 1차마크다운(90%) / 2차마크다운(80%) 자동 계산
 // 입력 중 포커스 잃지 않도록 같은 행의 markdown input만 직접 업데이트 (renderTable 미사용)
@@ -4682,6 +4723,9 @@ function generatePreview(){
 
   const selected = state.variants.filter(v => v.selected);
   if(selected.length === 0){ alert('선택된 변형이 없습니다'); return; }
+
+  // MD입력시중가 자동행 재계산 — 업로드 후 통화/공급업체(국내외)가 바뀌었을 수 있으므로
+  selected.forEach(v => { if(v._retailAuto){ const r = computeRetailPrice(v); if(r != null) v.retailPrice = r; } });
 
   // 자재그룹은 필수 (코드 생성 자체를 막아야 함)
   const badMC = selected.filter(v =>

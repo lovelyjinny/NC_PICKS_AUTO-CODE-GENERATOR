@@ -2024,6 +2024,10 @@ function mcTarget(mc){
   if(!mc || String(mc).length < 2) return '';
   return String(mc).charAt(1).toUpperCase();
 }
+// 행의 성별: 오더 GENDER 값 우선, 없으면 자재그룹(MC) 2번째 글자
+function rowGender(v){
+  return (v && v.gender ? String(v.gender).toUpperCase() : '') || mcTarget(v && v.materialGroup) || '';
+}
 const GENDER_LABEL = {M:'남성', W:'여성', K:'아동', C:'캐릭터', L:'라인', U:'공용/기타'};
 function genderLabel(g){ return GENDER_LABEL[g] || ('기타('+g+')'); }
 // 오더 GENDER 값 → 성별 코드 (WOMEN이 MEN을 포함하므로 여성 먼저 검사)
@@ -2062,8 +2066,8 @@ function applyPgByGender(){
   const map = getPgGenderMap(b.abbr);
   const present = {};
   state.variants.forEach(v => {
-    const g = mcTarget(v.materialGroup);
-    if(!g) return;                         // MC 없으면 성별 모름 → 스킵 (나중에 MC 채우면 재적용)
+    const g = rowGender(v);                 // 오더 성별 우선(MC 비어도 인식)
+    if(!g) return;
     present[g] = true;
     const pg = map[g];
     if(pg && (!v.pg || v._pgAuto)){ v.pg = pg; v._pgAuto = true; res.filled++; }
@@ -2083,7 +2087,7 @@ function openPgGenderDialog(genders){
   let gs = (Array.isArray(genders) && genders.length) ? genders.slice() : [];
   if(!gs.length){
     const present = {};
-    state.variants.forEach(v => { const g = mcTarget(v.materialGroup); if(g) present[g] = true; });
+    state.variants.forEach(v => { const g = rowGender(v); if(g) present[g] = true; });   // 오더 성별 우선
     gs = Object.keys(present);
   }
   if(!gs.length) gs = ['M','W'];
@@ -4325,7 +4329,7 @@ function updMC(i, val){
   // MC가 정해지면 그 행의 성별(2번째 글자)에 맞는 구매그룹 자동 채움 (학습된 매핑 있을 때, 수기 입력값은 보존)
   if(v && v.length === 6){
     const row = state.variants[i];
-    const g = mcTarget(v);
+    const g = rowGender(row);
     const map = getPgGenderMap(state.common.brand && state.common.brand.abbr);
     const pg = g ? map[g] : null;
     if(pg && (!row.pg || row._pgAuto)){

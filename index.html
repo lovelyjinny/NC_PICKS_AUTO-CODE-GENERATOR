@@ -507,6 +507,7 @@ table.data-tbl tr.row-disabled td { opacity:.3; }
 .mc-learned-exact    { background:#FDE68A !important; border-color:#D97706 !important; }   /* ① SKU 정확매칭 */
 .mc-learned-frequent { background:#FEF3C7 !important; border-color:#D97706 !important; }   /* ② 브랜드+아이템 최빈 */
 .mc-learned-prefix   { background:#FEFCE8 !important; }                                     /* ③ prefix 추정 */
+.mc-learned-cross    { background:#DBEAFE !important; border-color:#2563EB !important; }     /* ④ 다른 브랜드 참고(확인 권장) */
 .tab-content { animation:fadeIn .3s ease; }
 @keyframes fadeIn { from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:translateY(0);} }
 
@@ -797,6 +798,7 @@ table.preview-tbl td.num-cell { text-align:right; font-variant-numeric:tabular-n
       <table class="data-tbl" id="dataTbl"></table>
     </div>
     <div class="path-buttons">
+      <button class="btn btn-default" onclick="openMcSuggestDialog()">🌐 다른 브랜드 MC 참고</button>
       <button class="btn btn-default" onclick="openPgGenderDialog()">🧩 성별별 구매그룹 지정</button>
       <button class="btn btn-default" onclick="downloadEditTemplate()">📥 엑셀로 다운로드해 작성</button>
       <button class="btn btn-default" onclick="document.getElementById('editFileInput').click()">📤 작성한 엑셀 업로드</button>
@@ -1149,6 +1151,21 @@ table.preview-tbl td.num-cell { text-align:right; font-variant-numeric:tabular-n
     <div class="btns">
       <button class="btn btn-primary" onclick="savePgGenderMap()">저장하고 전체 적용</button>
       <button class="btn btn-default" onclick="closeModal('modalPgGender')">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- 다른 브랜드 참고 MC 추천 모달 -->
+<div class="modal-bg" id="modalMcSuggest">
+  <div class="modal" style="max-width:720px; width:92vw">
+    <h3>다른 브랜드 참고 — 자재그룹(MC) 채우기</h3>
+    <span class="muted" id="mcSuggestInfo">-</span>
+    <div class="info" style="margin:6px 0 10px;">자재그룹은 브랜드와 무관합니다. 다른 브랜드가 같은 품목에 쓴 코드를 가져옵니다. 품목·성별마다 맞는 코드를 골라주세요. (기본값 = 가장 많이 쓰는 코드, 마스터에 있는 코드만)</div>
+    <div id="mcSuggestRows" style="max-height:50vh; overflow:auto;"></div>
+    <div class="warn" id="mcSuggestWarn"></div>
+    <div class="btns">
+      <button class="btn btn-primary" onclick="saveMcSuggest()">선택한 코드로 전체 적용</button>
+      <button class="btn btn-default" onclick="closeModal('modalMcSuggest')">나중에</button>
     </div>
   </div>
 </div>
@@ -1672,6 +1689,79 @@ function applyMcLearning(brandAbbr){
   return { exact, frequent };
 }
 
+/* ===== 다른 브랜드 참고 MC (자재그룹은 상품 분류라 브랜드와 무관) ===== */
+let _crossMcIndex = null;
+function invalidateCrossMcIndex(){ _crossMcIndex = null; }
+// 시드+학습의 byBrandItem 전부를 (성별, 아이템) → {MC:횟수} 로 집계 (브랜드 무시)
+function getCrossBrandMcIndex(){
+  if(_crossMcIndex) return _crossMcIndex;
+  const idx = {};
+  const ingest = byBI => {
+    if(!byBI || typeof byBI !== 'object') return;
+    for(const brand in byBI){
+      const items = byBI[brand];
+      if(!items || typeof items !== 'object') continue;
+      for(const it in items){
+        const mcmap = items[it];
+        if(!mcmap || typeof mcmap !== 'object') continue;
+        for(const mc in mcmap){
+          if(!mc || mc.length < 6) continue;
+          const g = mc.charAt(1).toUpperCase();
+          const item = mc.slice(4,6).toUpperCase();
+          (idx[g] = idx[g] || {});
+          (idx[g][item] = idx[g][item] || {});
+          idx[g][item][mc] = (idx[g][item][mc]||0) + (Number(mcmap[mc])||1);
+        }
+      }
+    }
+  };
+  ingest((typeof MC_LEARNING_SEED === 'object' && MC_LEARNING_SEED) ? MC_LEARNING_SEED.byBrandItem : null);
+  ingest((dbOverlay.mcLearning||{}).byBrandItem);
+  _crossMcIndex = idx;
+  return idx;
+}
+// (성별, 아이템)에 대해 다른 브랜드가 쓴 MC 후보 [{mc,count,name}] — 많이 쓴 순, 마스터에 있는 코드만
+function crossBrandMcCandidates(gender, itemCode){
+  const idx = getCrossBrandMcIndex();
+  const out = {};
+  const add = g => { const m = (idx[g]||{})[itemCode]; if(m) for(const mc in m){ if(DATA.matgrp.find(x=>x.code===mc)) out[mc] = (out[mc]||0) + m[mc]; } };
+  if(gender) add(gender); else ['M','W','K','C','L','U'].forEach(add);
+  return Object.keys(out).map(mc => ({ mc, count: out[mc], name: (DATA.matgrp.find(x=>x.code===mc)||{}).name||'' }))
+                         .sort((a,b)=>b.count-a.count);
+}
+// 빈 MC행을 다른 브랜드 참고로 채움. 후보 1개=자동, 여러개=pending 반환
+// 반환: [{gender, item, candidates:[..], count}]  (복수 후보 조합만)
+function applyCrossBrandMc(){
+  const pend = {};
+  state.variants.forEach(v => {
+    if(v.materialGroup || !v.itemCode) return;
+    const g = (v.gender||'').toUpperCase();
+    const cands = crossBrandMcCandidates(g, v.itemCode);
+    if(cands.length === 0) return;
+    if(cands.length === 1){
+      v.materialGroup = cands[0].mc;
+      v._mcLearnedFrom = 'cross';
+      v._mcLearnedNote = '다른 브랜드 참고('+cands[0].count+'회) · 확인 권장';
+    } else {
+      const key = g + '|' + v.itemCode;
+      if(!pend[key]) pend[key] = { gender:g, item:v.itemCode, candidates:cands };
+    }
+  });
+  return Object.values(pend);
+}
+// 사용자가 고른 (브랜드, 아이템)→MC 를 학습 (다음부터 같은 브랜드 자동)
+function learnCrossPick(brandAbbr, itemCode, mc){
+  if(!brandAbbr || !itemCode || !mc) return;
+  if(!dbOverlay.mcLearning) dbOverlay.mcLearning = { byOrigCode:{}, byBrandItem:{} };
+  const byBI = dbOverlay.mcLearning.byBrandItem || (dbOverlay.mcLearning.byBrandItem = {});
+  const b = brandAbbr.toUpperCase();
+  (byBI[b] = byBI[b] || {});
+  (byBI[b][itemCode] = byBI[b][itemCode] || {});
+  byBI[b][itemCode][mc] = (byBI[b][itemCode][mc]||0) + 1;
+  invalidateCrossMcIndex();
+  saveDbOverlay();
+}
+
 // 학습된 헤더 + 내장 키워드 합친 검색 키워드 (필드별)
 function getMergedKeywords(field){
   const base = KEYWORDS[field] || [];
@@ -1936,6 +2026,16 @@ function mcTarget(mc){
 }
 const GENDER_LABEL = {M:'남성', W:'여성', K:'아동', C:'캐릭터', L:'라인', U:'공용/기타'};
 function genderLabel(g){ return GENDER_LABEL[g] || ('기타('+g+')'); }
+// 오더 GENDER 값 → 성별 코드 (WOMEN이 MEN을 포함하므로 여성 먼저 검사)
+function normGender(val){
+  const s = String(val||'').trim().toUpperCase();
+  if(!s) return '';
+  if(/(WOMEN|WOMAN|WMN|LADIES|LADY|FEMALE|여성|여)|^W$|^WM$|^F$/.test(s)) return 'W';
+  if(/(MEN|MAN|MENS|MALE|남성|남)|^M$|^MM$/.test(s)) return 'M';
+  if(/(KID|KIDS|JUNIOR|CHILD|YOUTH|INFANT|BOY|GIRL|아동|키즈|유아)/.test(s)) return 'K';
+  if(/(UNISEX|공용|공통)/.test(s)) return 'U';
+  return '';
+}
 
 function getPgGenderMap(brandAbbr){
   if(!brandAbbr) return {};
@@ -2021,6 +2121,52 @@ function savePgGenderMap(){
   closeModal('modalPgGender');
   renderTable();
   checkAlarms();
+}
+
+/* ===== 다른 브랜드 참고 MC 추천 다이얼로그 ===== */
+let _mcSuggestPending = [];
+function openMcSuggestDialog(pending){
+  // 인자 없으면(수동 버튼) 빈 MC행에서 다시 수집 — 단일 후보는 자동 채움
+  if(!Array.isArray(pending)){ pending = applyCrossBrandMc(); renderTable(); }
+  if(!pending || pending.length === 0){ alert('다른 브랜드 참고로 추가로 채울 항목이 없어요.\n(이미 채워졌거나, 참고할 다른 브랜드 기록이 없습니다)'); return; }
+  _mcSuggestPending = pending;
+  const itemName = it => (DATA.items||[]).find(x => x.code === it);
+  document.getElementById('mcSuggestInfo').textContent = '품목·성별 ' + pending.length + '종 — 코드를 확인해 주세요';
+  document.getElementById('mcSuggestRows').innerHTML =
+    '<table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="text-align:left; color:var(--muted);">'+
+    '<th style="padding:6px">성별</th><th style="padding:6px">품목</th><th style="padding:6px">자재그룹(MC) 선택</th></tr></thead><tbody>' +
+    pending.map((p, idx) => {
+      const inm = itemName(p.item);
+      const opts = p.candidates.map((c, ci) => '<option value="'+esc(c.mc)+'" '+(ci===0?'selected':'')+'>'+esc(c.mc)+' · '+esc(c.name)+' ('+c.count+'회)</option>').join('');
+      return '<tr style="border-top:1px solid var(--line)">'+
+        '<td style="padding:6px">'+esc(genderLabel(p.gender||'U'))+'</td>'+
+        '<td style="padding:6px"><b>'+esc(p.item)+'</b>'+(inm?' '+esc(inm.name):'')+'</td>'+
+        '<td style="padding:6px"><select id="mcSuggestSel_'+idx+'" style="width:100%">'+opts+'</select></td></tr>';
+    }).join('') + '</tbody></table>';
+  document.getElementById('mcSuggestWarn').textContent = '';
+  document.getElementById('modalMcSuggest').classList.add('show');
+}
+
+function saveMcSuggest(){
+  const brand = state.common.brand;
+  const abbr = brand && brand.abbr;
+  _mcSuggestPending.forEach((p, idx) => {
+    const sel = document.getElementById('mcSuggestSel_'+idx);
+    if(!sel) return;
+    const mc = String(sel.value||'').trim().toUpperCase();
+    if(!mc || !DATA.matgrp.find(x => x.code === mc)) return;
+    state.variants.forEach(v => {
+      if(v.materialGroup || v.itemCode !== p.item) return;
+      if((v.gender||'').toUpperCase() !== (p.gender||'').toUpperCase()) return;
+      v.materialGroup = mc; v._mcLearnedFrom = 'cross'; v._mcLearnedNote = '다른 브랜드 참고 · 확인 권장';
+    });
+    learnCrossPick(abbr, p.item, mc);   // 브랜드 학습 → 다음부터 자동
+  });
+  closeModal('modalMcSuggest');
+  const pgRes = applyPgByGender();      // MC가 채워졌으니 성별별 구매그룹도 적용
+  renderTable();
+  checkAlarms();
+  if(pgRes.multiCandidate && pgRes.missing.length > 0){ openPgGenderDialog(pgRes.missing); }
 }
 
 // 현재 선택된 브랜드의 구매그룹 DB에 값들을 누적(병합) 저장
@@ -3611,6 +3757,14 @@ async function handleOfferFile(file){
     }
     colMap.retailSrc = retailSrcCol;
 
+    // 성별(GENDER) 컬럼 — 다른 브랜드 참고 MC 채움에 사용
+    let genderCol = -1;
+    for(let i=0;i<headers.length;i++){
+      const hUp = String(headers[i]||'').trim().toUpperCase();
+      if(hUp === 'GENDER' || hUp === 'SEX' || hUp === '성별' || hUp.includes('GENDER') || hUp.includes('성별')){ genderCol = i; break; }
+    }
+    colMap.gender = genderCol;
+
     let backCalcCount = 0;
     // 행에서 구매가 산출: ①역제안가 → ②총금액÷수량 역산 → ③기타 직접단가
     function pickBuyPrice(row){
@@ -3898,6 +4052,7 @@ async function handleOfferFile(file){
         color: pcolor,
         buyPrice: pickBuyPrice(row),
         origPrice: retailSrcCol>=0 ? (parseFloat(row[retailSrcCol])||0) : 0,  // 오리지널가/RRP 원본
+        gender: genderCol>=0 ? normGender(row[genderCol]) : '',                // 오더 성별 → 다른브랜드 MC 참고용
         origin: String(row[colMap.origin]||'').trim(),
         itemCategory: rawItem,     // 오퍼시트 원본값 (표에 표시)
         itemCode: itemCode,        // 매핑된 2자리 코드 (MC 마지막 2자리로 사용)
@@ -4019,11 +4174,13 @@ async function handleOfferFile(file){
     document.getElementById('ledgerSection').style.display='block';
     document.getElementById('tableSection').style.display='block';
     document.getElementById('genSection').style.display='block';
-    const _pgRes = applyPgByGender();   // 성별별 구매그룹 자동 채움 (학습된 매핑)
+    const _mcPending = applyCrossBrandMc();   // 다른 브랜드 참고 MC: 단일 후보 자동, 복수는 대기
+    const _pgRes = applyPgByGender();          // 성별별 구매그룹 자동 채움 (MC 채워진 행 기준)
     renderTable();
     checkAlarms();
-    // 후보가 여러 개인데 아직 성별↔구매그룹 매핑이 없는 성별이 있으면 지정 다이얼로그 표시
-    if(_pgRes.multiCandidate && _pgRes.missing.length > 0){ openPgGenderDialog(_pgRes.missing); }
+    // 우선순위: 다른브랜드 MC 추천 다이얼로그 → (없으면) 성별별 구매그룹 다이얼로그
+    if(_mcPending.length > 0){ openMcSuggestDialog(_mcPending); }
+    else if(_pgRes.multiCandidate && _pgRes.missing.length > 0){ openPgGenderDialog(_pgRes.missing); }
   } catch(e){
     status.className = 'upload-status error';
     status.textContent = '✗ 파일 분석 실패: ' + e.message;
@@ -4160,7 +4317,7 @@ function updMC(i, val){
   // 사용자가 직접 수정하면 학습 마커 제거 (노란 배경 사라짐)
   delete state.variants[i]._mcLearnedFrom;
   delete state.variants[i]._mcLearnedNote;
-  event.target.classList.remove('mc-learned-exact','mc-learned-frequent','mc-learned-prefix');
+  event.target.classList.remove('mc-learned-exact','mc-learned-frequent','mc-learned-prefix','mc-learned-cross');
   event.target.title = '';
   if(v && !DATA.matgrp.find(m => m.code === v)){
     event.target.classList.add('cell-warn');

@@ -2041,6 +2041,18 @@ function normGender(val){
   if(/(UNISEX|공용|공통)/.test(s)) return 'U';
   return '';
 }
+// 오더의 월/계절월 값 → 코드(1~9, T=10, N=11, D=12). 이미 코드문자면 그대로
+function normSeasonMonth(val){
+  if(val === null || val === undefined || val === '') return '';
+  const s = String(val).trim().toUpperCase();
+  const n = parseInt(s, 10);
+  if(!isNaN(n) && String(n) === s.replace(/^0+/, '')){
+    if(n >= 1 && n <= 9) return String(n);
+    if(n === 10) return 'T'; if(n === 11) return 'N'; if(n === 12) return 'D';
+  }
+  if(SEASON_MONTHS.indexOf(s) >= 0) return s;
+  return '';
+}
 
 function getPgGenderMap(brandAbbr){
   if(!brandAbbr) return {};
@@ -3770,6 +3782,16 @@ async function handleOfferFile(file){
     }
     colMap.gender = genderCol;
 
+    // 오더에 'MD입력시중가'·'월(계절월)'이 이미 채워져 있으면 그대로 읽음 (계산보다 우선)
+    let retailDirectCol = -1, seasonMonthCol = -1;
+    for(let i=0;i<headers.length;i++){
+      const h = String(headers[i]||'').trim();
+      if(retailDirectCol < 0 && h.includes('시중가')) retailDirectCol = i;   // MD입력시중가 / 시중가
+      if(seasonMonthCol < 0 && h.includes('계절월')) seasonMonthCol = i;      // 월(계절월)
+    }
+    colMap.retailDirect = retailDirectCol;
+    colMap.seasonMonth = seasonMonthCol;
+
     let backCalcCount = 0;
     // 행에서 구매가 산출: ①역제안가 → ②총금액÷수량 역산 → ③기타 직접단가
     function pickBuyPrice(row){
@@ -4062,15 +4084,22 @@ async function handleOfferFile(file){
         itemCategory: rawItem,     // 오퍼시트 원본값 (표에 표시)
         itemCode: itemCode,        // 매핑된 2자리 코드 (MC 마지막 2자리로 사용)
         sizeValue: '', qty: 0,
-        materialGroup: '', seasonMonth: '',
+        materialGroup: '',
+        seasonMonth: seasonMonthCol>=0 ? normSeasonMonth(row[seasonMonthCol]) : '',   // 오더에 월(계절월) 있으면 읽음
         pg: (function(){ const l = state.common.brand ? parsePgList(state.common.brand.pg) : []; return l.length === 1 ? l[0] : ''; })(),  // 후보 1개면 미리 채움, 여러 개면 성별별/수기 채움
         sellPrice: 0, retailPrice: 0, markdown1: 0, markdown2: 0,
         selected: true,
       };
       if(!base.origCode) continue;
-      // MD입력시중가 자동 계산 (국내=오리지널가, 해외=RRP×환율×1.3). 계산되면 자동 채움 표시
-      const _autoRetail = computeRetailPrice(base);
-      if(_autoRetail != null){ base.retailPrice = _autoRetail; base._retailAuto = true; }
+      // MD입력시중가: ① 오더에 직접 있으면 그 값 사용, ② 없으면 자동 계산(국내=오리지널가, 해외=RRP×환율×1.3)
+      if(retailDirectCol >= 0){
+        const rp = parseFloat(row[retailDirectCol]);
+        if(!isNaN(rp) && rp > 0){ base.retailPrice = rp; base._retailFromFile = true; }
+      }
+      if(!base.retailPrice){
+        const _autoRetail = computeRetailPrice(base);
+        if(_autoRetail != null){ base.retailPrice = _autoRetail; base._retailAuto = true; }
+      }
 
       // 사이즈 매트릭스 펼치기
       if(sizeMatrixCols.length > 0){
@@ -4145,11 +4174,14 @@ async function handleOfferFile(file){
       mapInfo.push('구매가=' + (isRatio ? '원가율 컬럼('+hname+') × 시중가' : hname));
     } else mapInfo.push('구매가=❌없음');
     // MD입력시중가 원본 + 계산방식 안내
-    if(colMap.retailSrc>=0){
+    if(colMap.retailDirect>=0){
+      mapInfo.push('MD시중가=' + (headers[colMap.retailDirect]||'?') + ' 그대로 읽음');
+    } else if(colMap.retailSrc>=0){
       const rname = headers[colMap.retailSrc]||'?';
       const isDom = state.common.vendor && state.common.vendor.isDomestic;
       mapInfo.push('MD시중가=' + rname + (isDom ? ' 그대로(국내)' : ' × 환율 × 1.3, 천원반올림(해외)'));
     } else mapInfo.push('MD시중가=수기입력(원본 컬럼 없음)');
+    if(colMap.seasonMonth>=0) mapInfo.push('월(계절월)=' + (headers[colMap.seasonMonth]||'?') + ' 그대로 읽음');
     if(sizeMatrixCols.length>0) mapInfo.push('사이즈매트릭스='+sizeMatrixCols.map(s=>s.label).join('/'));
     if(colMap.item>=0) mapInfo.push('아이템='+(headers[colMap.item]||'?')+(itemRecognizedCount>0?'(인식 '+itemRecognizedCount+'행)':''));
     else if(itemRecognizedCount>0) mapInfo.push('아이템=상품명에서 추출('+itemRecognizedCount+'행)');

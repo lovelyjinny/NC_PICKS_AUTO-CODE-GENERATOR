@@ -5382,10 +5382,11 @@ function downloadGeneratedExcel(){
   XLSX.writeFile(wb, fn);
 
   state.ledger = ledger;
+  scheduleSave();   // 채번을 저장 → 새로고침·재접속해도 다음 배치가 이어서 매겨짐
   const st = document.getElementById('genStatus');
   st.style.display='block';
   st.classList.remove('error');
-  st.textContent = '✓ '+output.length+'개 코드 다운로드 완료 → '+fn;
+  st.textContent = '✓ '+output.length+'개 코드 다운로드 완료 → '+fn + '  (채번 저장됨 — 같은 브라우저면 다음 추가분이 이어서 매겨집니다)';
 }
 
 function addDays(dateStr, days){

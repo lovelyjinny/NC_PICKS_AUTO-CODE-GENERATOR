@@ -1495,54 +1495,21 @@ function loadDbOverlay(){
   applyInitialSeed();
 }
 
-// 발주입고 마스터에서 추출한 과거 작업 기록(시드)을 학습 DB에 자동 머지
-// — 사용자 누적값이 우선이고, 시드는 빈 곳만 채워주거나 빈도 가산
+// 시드(MC_LEARNING_SEED)는 HTML에 내장되어 있어 localStorage에 따로 저장하지 않는다.
+// 조회는 mcLearnByOrig/mcLearnBucket/brandPrefixOf 가 시드를 직접 참고한다.
+// 여기서는 '예전 버전에서 시드가 통째로 저장돼 용량을 먹던' 흔적만 청소(브랜드 수정 저장 정상화).
 function applyInitialSeed(){
-  const seed = (typeof MC_LEARNING_SEED === 'object' && MC_LEARNING_SEED) ? MC_LEARNING_SEED : null;
-  if(!seed) return;
-  // 이미 한 번 적용된 적이 있으면(같은 버전), 다시 적용 안 함 (중복 가산 방지)
-  const seedVer = (seed._meta && seed._meta.generated_at) || 'v0';
-  if(dbOverlay._seedAppliedVer === seedVer) return;
-  if(!dbOverlay.mcLearning) dbOverlay.mcLearning = { byOrigCode:{}, byBrandItem:{} };
-  if(!dbOverlay.brandPrefix) dbOverlay.brandPrefix = {};
   const ml = dbOverlay.mcLearning;
-  if(!ml.byOrigCode) ml.byOrigCode = {};
-  if(!ml.byBrandItem) ml.byBrandItem = {};
-  // ① byOrigCode: 사용자 학습이 우선, 시드는 빈 키만 채움
-  if(seed.byOrigCode){
-    for(const k in seed.byOrigCode){
-      if(!ml.byOrigCode[k]) ml.byOrigCode[k] = seed.byOrigCode[k];
-    }
+  const bloated = !!dbOverlay._seedAppliedVer ||
+                  (ml && Object.keys(ml.byOrigCode||{}).length > 200) ||
+                  (dbOverlay.brandPrefix && Object.keys(dbOverlay.brandPrefix).length > 100);
+  if(bloated){
+    dbOverlay.mcLearning = { byOrigCode:{}, byBrandItem:{} };   // 사용자 학습만 다시 작게 누적
+    dbOverlay.brandPrefix = {};
+    delete dbOverlay._seedAppliedVer;
+    try { saveDbOverlay(); } catch(e){}   // 정리된 작은 버전으로 다시 저장 → 용량 확보
+    console.info('🧹 시드 분리: 과거 저장된 시드 데이터 정리 (저장공간 확보)');
   }
-  // ② byBrandItem: 빈도 합치기 (사용자 학습 + 시드)
-  if(seed.byBrandItem){
-    for(const brand in seed.byBrandItem){
-      if(!ml.byBrandItem[brand]) ml.byBrandItem[brand] = {};
-      const seedItems = seed.byBrandItem[brand];
-      for(const item in seedItems){
-        if(!ml.byBrandItem[brand][item]) ml.byBrandItem[brand][item] = {};
-        const bucket = ml.byBrandItem[brand][item];
-        const seedBucket = seedItems[item];
-        for(const mc in seedBucket){
-          bucket[mc] = (bucket[mc]||0) + seedBucket[mc];
-        }
-      }
-    }
-  }
-  // ③ brandPrefix: 사용자 학습이 우선, 시드는 빈 키만 채움
-  if(seed.brandPrefix){
-    for(const b in seed.brandPrefix){
-      if(!dbOverlay.brandPrefix[b]) dbOverlay.brandPrefix[b] = seed.brandPrefix[b];
-    }
-  }
-  dbOverlay._seedAppliedVer = seedVer;
-  saveDbOverlay();
-  // 콘솔에 안내 (조용히 — 사용자에게 alert는 안 띄움)
-  try {
-    const ocnt = Object.keys(ml.byOrigCode).length;
-    const bicnt = Object.keys(ml.byBrandItem).length;
-    console.info(`🧠 학습 시드 적용 (${seedVer}): SKU ${ocnt}건 · 브랜드 ${bicnt}개`);
-  } catch(e){}
 }
 
 /* ===== 공급업체 오퍼시트 형식 프로필 ===== */
@@ -1598,7 +1565,7 @@ function learnBrandPrefix(brandAbbr, variants){
 // 학습된 prefix가 있으면, 빈 MC 행에 prefix + itemCode 적용 (matgrp 존재 시만)
 // 반환: { applied: 채워진 행 수, prefix: 사용된 prefix }
 function applyBrandPrefix(brandAbbr){
-  const prefix = (dbOverlay.brandPrefix||{})[brandAbbr];
+  const prefix = brandPrefixOf(brandAbbr);   // 사용자 + 시드
   if(!prefix) return { applied:0, prefix:'' };
   let applied = 0;
   state.variants.forEach(v => {
@@ -1648,19 +1615,37 @@ function learnMcMapping(brandAbbr, variants){
   if(touched) saveDbOverlay();
 }
 
+/* ===== 학습 조회 헬퍼: 사용자(dbOverlay) + 시드(MC_LEARNING_SEED, HTML 내장) 합쳐서 본다 =====
+   시드는 용량이 커서 localStorage(dbOverlay)에 저장하지 않고, 조회할 때만 참고함 */
+function _seedObj(){ return (typeof MC_LEARNING_SEED === 'object' && MC_LEARNING_SEED) ? MC_LEARNING_SEED : {}; }
+function mcLearnByOrig(k){
+  const u = (dbOverlay.mcLearning && dbOverlay.mcLearning.byOrigCode) || {};
+  if(u[k]) return u[k];
+  return (_seedObj().byOrigCode || {})[k] || null;
+}
+function mcLearnBucket(brand, item){
+  const out = {};
+  const s = (_seedObj().byBrandItem || {})[brand];
+  if(s && s[item]) for(const mc in s[item]) out[mc] = (out[mc]||0) + s[item][mc];
+  const u = ((dbOverlay.mcLearning||{}).byBrandItem || {})[brand];
+  if(u && u[item]) for(const mc in u[item]) out[mc] = (out[mc]||0) + u[item][mc];
+  return Object.keys(out).length ? out : null;
+}
+function brandPrefixOf(brandAbbr){
+  const u = (dbOverlay.brandPrefix||{})[brandAbbr];
+  return u || (_seedObj().brandPrefix || {})[brandAbbr] || '';
+}
+
 // 적용: 빈 MC 행에 ① origCode 매칭 → ② brand+itemCode 최빈 → (③은 별도 applyBrandPrefix가 처리)
 // 반환: { exact:n, frequent:n }
 function applyMcLearning(brandAbbr){
-  const ml = (dbOverlay.mcLearning||{});
-  const byOrig = ml.byOrigCode || {};
-  const byBI = ml.byBrandItem || {};
   let exact = 0, frequent = 0;
   state.variants.forEach(v => {
     if(v.materialGroup) return;
-    // ① origCode 정확 매칭 (브랜드 무관히 + 브랜드별 둘 다 시도)
+    // ① origCode 정확 매칭 (사용자 학습 우선, 없으면 시드)
     if(v.origCode){
       const k1 = (brandAbbr||'_') + '|' + v.origCode;
-      const hit = byOrig[k1];
+      const hit = mcLearnByOrig(k1);
       if(hit && DATA.matgrp.find(m => m.code === hit)){
         v.materialGroup = hit;
         v._mcLearnedFrom = 'exact';
@@ -1669,9 +1654,9 @@ function applyMcLearning(brandAbbr){
         return;
       }
     }
-    // ② 브랜드 + 아이템 빈도 최빈값
+    // ② 브랜드 + 아이템 빈도 최빈값 (사용자 + 시드)
     if(brandAbbr && v.itemCode){
-      const bucket = (byBI[brandAbbr]||{})[v.itemCode];
+      const bucket = mcLearnBucket(brandAbbr, v.itemCode);
       if(bucket){
         let bestMc=null, bestN=0, total=0;
         for(const [mc,n] of Object.entries(bucket)){

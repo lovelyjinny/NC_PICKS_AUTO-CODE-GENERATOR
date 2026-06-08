@@ -798,6 +798,7 @@ table.preview-tbl td.num-cell { text-align:right; font-variant-numeric:tabular-n
       <table class="data-tbl" id="dataTbl"></table>
     </div>
     <div class="path-buttons">
+      <button class="btn btn-default" onclick="openDupDialog()">🔁 중복 생성 확인</button>
       <button class="btn btn-default" onclick="openMcSuggestDialog()">🌐 다른 브랜드 MC 참고</button>
       <button class="btn btn-default" onclick="openPgGenderDialog()">🧩 성별별 구매그룹 지정</button>
       <button class="btn btn-default" onclick="downloadEditTemplate()">📥 엑셀로 다운로드해 작성</button>
@@ -1155,6 +1156,25 @@ table.preview-tbl td.num-cell { text-align:right; font-variant-numeric:tabular-n
   </div>
 </div>
 
+<!-- 중복 생성 처리 모달 -->
+<div class="modal-bg" id="modalDupCheck">
+  <div class="modal" style="max-width:760px; width:92vw">
+    <h3>이전에 생성한 상품이 있어요</h3>
+    <span class="muted" id="dupInfo">-</span>
+    <div class="info" style="margin:6px 0 10px;">아래 상품들은 예전에 코드를 만든 적이 있어요. 어떻게 할지 골라주세요. (신규 상품은 그대로 생성됩니다)</div>
+    <div style="display:flex; gap:8px; margin-bottom:10px;">
+      <span style="font-size:13px;color:var(--muted);align-self:center;">전부 한 번에 →</span>
+      <button class="btn btn-default" style="padding:6px 12px;font-size:13px;" onclick="setAllDup('add')">🆕 전부 추가 생성</button>
+      <button class="btn btn-default" style="padding:6px 12px;font-size:13px;" onclick="setAllDup('keep')">♻ 전부 기존 정보로 대체</button>
+    </div>
+    <div id="dupRows" style="max-height:48vh; overflow:auto;"></div>
+    <div class="btns">
+      <button class="btn btn-primary" onclick="applyDupChoices()">선택대로 적용</button>
+      <button class="btn btn-default" onclick="closeModal('modalDupCheck')">취소</button>
+    </div>
+  </div>
+</div>
+
 <!-- 다른 브랜드 참고 MC 추천 모달 -->
 <div class="modal-bg" id="modalMcSuggest">
   <div class="modal" style="max-width:720px; width:92vw">
@@ -1479,6 +1499,7 @@ function _emptyOverlay(){
            vendorProfiles:{}, learnedHeaders:{}, colorAliases:{}, sizeAliases:{},
            brandPrefix:{},                                      // 브랜드 주력 prefix 1개 (③ fallback)
            pgGender:{},                                         // 브랜드별 성별→구매그룹 매핑 {abbr:{M,W,K,C,L,U}}
+           genHistory:{},                                       // 생성 이력 {브랜드|오리지널코드|컬러|사이즈 : 상품코드} — 중복 생성 방지
            mcLearning:{ byOrigCode:{}, byBrandItem:{} } };       // ① SKU 정확매칭, ② 브랜드+아이템 빈도맵
 }
 let dbOverlay = _emptyOverlay();
@@ -1746,6 +1767,39 @@ function learnCrossPick(brandAbbr, itemCode, mc){
   byBI[b][itemCode][mc] = (byBI[b][itemCode][mc]||0) + 1;
   invalidateCrossMcIndex();
   saveDbOverlay();
+}
+
+/* ===== 중복 생성 방지 (이전에 만든 상품 경고) — 완전일치: 브랜드+오리지널코드+컬러+사이즈 ===== */
+function genIdentity(brandAbbr, origCode, color, size){
+  const o = String(origCode||'').trim().toUpperCase();
+  if(!o) return '';
+  return [String(brandAbbr||'').trim().toUpperCase(), o,
+          String(color||'').trim().toUpperCase(), String(size||'').trim().toUpperCase()].join('|');
+}
+// 현재 state.variants 중 '이전에 생성한 적 있는' 행에 _dupPrevCode 표시. 반환: 중복 행 수
+function markDuplicates(){
+  const hist = dbOverlay.genHistory || {};
+  const abbr = state.common.brand && state.common.brand.abbr;
+  let n = 0;
+  state.variants.forEach(v => {
+    const id = genIdentity(abbr, v.origCode, v.color, v.sizeValue);
+    const prev = id ? hist[id] : null;
+    if(prev){ v._dupPrevCode = prev; n++; }
+    else { delete v._dupPrevCode; }
+  });
+  return n;
+}
+// 생성(다운로드)된 상품을 이력에 저장 — 같은 신분증이 처음일 때만 기록(원래 코드 보존)
+function recordGenerated(){
+  if(!lastPreview || !state.common.brand) return;
+  const abbr = state.common.brand.abbr;
+  if(!dbOverlay.genHistory) dbOverlay.genHistory = {};
+  let added = 0;
+  lastPreview.output.forEach(r => {
+    const id = genIdentity(abbr, r['오리지널코드'], r['칼라'], r['사이즈']);
+    if(id && !dbOverlay.genHistory[id]){ dbOverlay.genHistory[id] = r['상품코드']; added++; }
+  });
+  if(added > 0) saveDbOverlay();
 }
 
 // 학습된 헤더 + 내장 키워드 합친 검색 키워드 (필드별)
@@ -2169,6 +2223,42 @@ function saveMcSuggest(){
   renderTable();
   checkAlarms();
   if(pgRes.multiCandidate && pgRes.missing.length > 0){ openPgGenderDialog(pgRes.missing); }
+}
+
+/* ===== 중복 생성 처리 다이얼로그 ===== */
+let _dupList = [];
+function openDupDialog(dups){
+  if(!Array.isArray(dups)) dups = state.variants.filter(v => v.selected && v._dupPrevCode);
+  if(!dups.length){ alert('이전에 생성한 적 있는(중복) 상품이 없어요.'); return; }
+  _dupList = dups;
+  document.getElementById('dupInfo').textContent = '이전에 생성한 적 있는 상품 ' + dups.length + '건';
+  document.getElementById('dupRows').innerHTML =
+    '<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;color:var(--muted);">'+
+    '<th style="padding:6px">오리지널코드</th><th style="padding:6px">컬러</th><th style="padding:6px">사이즈</th><th style="padding:6px">이전에 만든 코드</th><th style="padding:6px">처리</th></tr></thead><tbody>'+
+    dups.map((v,i)=>{
+      const cur = v._dupAction || 'keep';
+      return '<tr style="border-top:1px solid var(--line)">'+
+        '<td style="padding:6px">'+esc(v.origCode)+'</td>'+
+        '<td style="padding:6px">'+esc(v.color)+'</td>'+
+        '<td style="padding:6px">'+esc(v.sizeValue)+'</td>'+
+        '<td style="padding:6px;font-family:Consolas,monospace;color:var(--muted)">'+esc(v._dupPrevCode)+'</td>'+
+        '<td style="padding:6px;white-space:nowrap">'+
+          '<label style="margin-right:10px;cursor:pointer"><input type="radio" name="dup'+i+'" value="add" '+(cur==='add'?'checked':'')+'> 🆕 추가 생성</label>'+
+          '<label style="cursor:pointer"><input type="radio" name="dup'+i+'" value="keep" '+(cur==='keep'?'checked':'')+'> ♻ 기존 정보로 대체</label>'+
+        '</td></tr>';
+    }).join('')+'</tbody></table>';
+  document.getElementById('modalDupCheck').classList.add('show');
+}
+function setAllDup(val){
+  _dupList.forEach((v,i)=>{ const r=document.querySelector('input[name="dup'+i+'"][value="'+val+'"]'); if(r) r.checked=true; });
+}
+function applyDupChoices(){
+  _dupList.forEach((v,i)=>{
+    const sel = document.querySelector('input[name="dup'+i+'"]:checked');
+    v._dupAction = sel ? sel.value : 'keep';
+  });
+  closeModal('modalDupCheck');
+  generatePreview();   // 선택 반영해서 생성 진행
 }
 
 // 현재 선택된 브랜드의 구매그룹 DB에 값들을 누적(병합) 저장
@@ -4198,6 +4288,7 @@ async function handleOfferFile(file){
     document.getElementById('genSection').style.display='block';
     const _mcPending = applyCrossBrandMc();   // 다른 브랜드 참고 MC: 단일 후보 자동, 복수는 대기
     const _pgRes = applyPgByGender();          // 성별별 구매그룹 자동 채움 (MC 채워진 행 기준)
+    markDuplicates();                          // 이전에 생성한 상품이면 표시 (경고는 alarmBox에)
     renderTable();
     checkAlarms();
     // 우선순위: 다른브랜드 MC 추천 다이얼로그 → (없으면) 성별별 구매그룹 다이얼로그
@@ -4521,6 +4612,11 @@ function checkAlarms(){
     msgs.push(`⚠️ 사이즈 변환 실패: ${unmSiz.length}종 / ${totalRows}행 — ${previewSizes}${moreInfo}${actionBtn}`);
   }
   if(!state.common.currency) msgs.push('⚠️ 통화 단위를 선택해 주세요.');
+  // 중복(이전 생성) 안내 — 처리방법 아직 안 고른 행
+  const dupCnt = state.variants.filter(v => v.selected && v._dupPrevCode && !v._dupAction).length;
+  if(dupCnt > 0){
+    msgs.push(`🔁 이전에 생성한 적 있는 상품이 <b>${dupCnt}건</b> 있어요. 추가 생성/기존 대체를 골라주세요 <button onclick='openDupDialog()' class="learn-btn">🔁 중복 처리</button>`);
+  }
   box.innerHTML = msgs.join('<br>');
   box.classList.toggle('show', msgs.length>0);
 }
@@ -5089,6 +5185,14 @@ function generatePreview(){
     return;
   }
 
+  // 중복 생성 방지: 이전에 만든 적 있는데 처리방법(추가생성/기존대체)이 아직 안 정해진 행이 있으면 물어봄
+  markDuplicates();
+  const unresolvedDup = selected.filter(v => v._dupPrevCode && !v._dupAction);
+  if(unresolvedDup.length > 0){
+    openDupDialog(unresolvedDup);
+    return;   // 선택 후 자동으로 다시 생성됨
+  }
+
   // 코드 생성 (채번)
   const ledger = Object.assign({}, state.ledger);
   // 같은 (브랜드+자재그룹뒤2자+연도시즌+성별) 키를 가진 변형은 같은 순서코드 공유? 아니면 각자 다른?
@@ -5101,22 +5205,28 @@ function generatePreview(){
     const sn = (SEASON_MAP[v.seasonMonth]||9).toString();
     const ys = yr + sn;
     const g = inferGender(v.materialGroup);
-    const key7 = (c.brand.abbr||'??') + it + ys + g;
-    let serial;
-    if(styleSerials[v.origCode]) {
-      serial = styleSerials[v.origCode];
-    } else {
-      ledger[key7] = (ledger[key7]||0) + 1;
-      serial = ledger[key7];
-      styleSerials[v.origCode] = serial;
-    }
-
     const sizeGroup = inferSizeGroup(v.materialGroup);
     const brandAbbrLocal = c.brand && c.brand.abbr;
     const colorCode = convertColor(v.color, brandAbbrLocal);
     const sizeCode = convertSize(sizeGroup, v.sizeValue, brandAbbrLocal);
-    const monthCode = String(v.seasonMonth||'').trim().toUpperCase();   // 계절월: 연번 뒤에 붙음
-    const code = (c.brand.abbr||'??') + it + ys + g + pad3(serial) + monthCode + colorCode + sizeCode;
+    let code;
+    if(v._dupAction === 'keep' && v._dupPrevCode){
+      // 기존 정보로 대체 — 예전 코드 그대로, 새 채번 안 함
+      code = v._dupPrevCode;
+    } else {
+      // 신규 또는 '추가 생성' — 새로 채번
+      const key7 = (c.brand.abbr||'??') + it + ys + g;
+      let serial;
+      if(styleSerials[v.origCode]) {
+        serial = styleSerials[v.origCode];
+      } else {
+        ledger[key7] = (ledger[key7]||0) + 1;
+        serial = ledger[key7];
+        styleSerials[v.origCode] = serial;
+      }
+      const monthCode = String(v.seasonMonth||'').trim().toUpperCase();   // 계절월: 연번 뒤에 붙음
+      code = (c.brand.abbr||'??') + it + ys + g + pad3(serial) + monthCode + colorCode + sizeCode;
+    }
 
     output.push({
       상품코드: code,
@@ -5368,6 +5478,8 @@ function downloadGeneratedExcel(){
 
   state.ledger = ledger;
   scheduleSave();   // 채번을 저장 → 새로고침·재접속해도 다음 배치가 이어서 매겨짐
+  recordGenerated();   // 생성 이력 저장 → 다음에 같은 상품 업로드 시 '이전 생성' 경고
+  markDuplicates();    // 방금 만든 게 표에서 바로 중복으로 인식되도록 갱신
   const st = document.getElementById('genStatus');
   st.style.display='block';
   st.classList.remove('error');

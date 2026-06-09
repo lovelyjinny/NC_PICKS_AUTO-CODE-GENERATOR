@@ -3628,10 +3628,16 @@ async function handleOfferFile(file){
     const maxCols = Math.max(0, ...headerRowsIdx.map(r => (matrix[r]||[]).length));
     const headers = [];
     for(let i=0; i<maxCols; i++){
+      // 메인 헤더 칸에 값이 있으면 그대로 사용 (아래 합계/데이터 행을 덧붙이지 않음 — "37 21" 방지)
+      const mainVal = (matrix[headerRow]||[])[i];
+      const mainStr = (mainVal===null||mainVal===undefined) ? '' : String(mainVal).trim();
+      if(mainStr){ headers.push(mainStr); continue; }
+      // 메인 헤더가 빈 칸일 때만 아래 헤더 행들로 채움 (몽벨식 2줄 사이즈 헤더 지원)
       const parts = [];
       for(const r of headerRowsIdx){
+        if(r === headerRow) continue;
         const v = (matrix[r]||[])[i];
-        const s = v===null?'':String(v).trim();
+        const s = (v===null||v===undefined) ? '' : String(v).trim();
         if(s && !parts.includes(s)) parts.push(s);
       }
       headers.push(parts.join(' '));
@@ -4809,6 +4815,8 @@ function convertSize(group, val, brandAbbr){
     const isFracEu = /^\d{2}\s[12]\s3$/.test(sk);
     if((group === '신발' || isFracEu) && SHOE_EU2MM[sk]) return SHOE_EU2MM[sk];
   }
+  // 신발인데 EU→mm 표에 없는 2자리 사이즈 → 가짜 0XX 만들지 말고 미매핑(???)으로 표시 (확인·매핑 유도)
+  if(group === '신발' && /^\d{2}([.,]\d+)?$/.test(v)) return '???';
   // 키즈 호수 매트릭스 "N/CM" 또는 "N/FREE" (예: 0/80→080, 9/FREE→FRE) — 서양물산 등
   const kidsM = v.match(/^\d\s*\/\s*(\d{2,3}|FREE)$/);
   if(kidsM){

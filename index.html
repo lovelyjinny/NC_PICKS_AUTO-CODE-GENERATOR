@@ -5275,6 +5275,27 @@ function generatePreview(){
     });
   });
 
+  // ===== 코드 충돌 검사: 서로 다른 상품(오리지널코드/컬러/사이즈)이 같은 상품코드로 나오면 경고 =====
+  // (대부분 컬러가 같은 코드로 변환되는 경우 — 예: BLUE와 S/BLUE가 둘 다 60)
+  const _codeGroups = {};
+  output.forEach(r => {
+    const srcId = (r['오리지널코드']||'') + ' / ' + (r['칼라']||'') + ' / ' + (r['사이즈']||'');
+    const code = r['상품코드'];
+    (_codeGroups[code] = _codeGroups[code] || new Set()).add(srcId);
+  });
+  const _collisions = Object.entries(_codeGroups).filter(e => e[1].size > 1);
+  if(_collisions.length > 0){
+    output.forEach(r => {
+      if((_codeGroups[r['상품코드']]||new Set()).size > 1) r._collision = true;
+    });
+    let detail = _collisions.slice(0,6).map(e => '· ' + e[0] + '\n    ← ' + [...e[1]].join('\n    ← ')).join('\n');
+    if(_collisions.length > 6) detail += '\n  …외 ' + (_collisions.length-6) + '건';
+    alert('🚨 서로 다른 상품인데 같은 상품코드가 만들어졌어요! (' + _collisions.length + '종)\n\n'
+        + '대부분 컬러(또는 사이즈)가 같은 코드로 변환돼서예요.\n'
+        + '아래에서 어떤 색이 겹쳤는지 확인하고, ⑤ DB 관리 ▸ 컬러에서 서로 다르게 매핑한 뒤 다시 생성해 주세요.\n\n'
+        + detail);
+  }
+
   // 미리보기 데이터 저장 — 다운로드 시 사용
   const uniqueStyles = new Set(selected.map(v=>v.origCode)).size;
   const totalQty = selected.reduce((s,v)=>s+(parseInt(v.qty)||0), 0);
@@ -5342,12 +5363,13 @@ function renderPreviewTable(output){
   cols.forEach(c => html += '<th>'+c.label+'</th>');
   html += '</tr></thead><tbody>';
   output.forEach(row => {
-    html += '<tr>';
+    html += '<tr'+(row._collision?' style="background:#FDECEC"':'')+'>';
     cols.forEach(c => {
       let v = row[c.key];
       if(v===null || v===undefined || v==='') v = '-';
       else if(c.cls==='num-cell' && !isNaN(v)) v = Number(v).toLocaleString();
-      html += '<td'+(c.cls?' class="'+c.cls+'"':'')+'>'+v+'</td>';
+      const mark = (c.key==='상품코드' && row._collision) ? ' 🚨' : '';
+      html += '<td'+(c.cls?' class="'+c.cls+'"':'')+'>'+v+mark+'</td>';
     });
     html += '</tr>';
   });

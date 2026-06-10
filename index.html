@@ -742,6 +742,10 @@ table.preview-tbl td.num-cell { text-align:right; font-variant-numeric:tabular-n
         <div class="info" id="currencyInfo"></div>
       </div>
     </div>
+    <label style="display:flex; align-items:center; gap:8px; margin-top:16px; font-size:14px; cursor:pointer; background:#F7F1E8; border:1px solid #E7DDD0; border-radius:10px; padding:11px 14px;">
+      <input type="checkbox" id="optCombineName" checked onchange="saveCombineName()" style="width:17px; height:17px;">
+      <span><b>상품명 자동 조합</b> <span style="color:var(--muted); font-size:13px;">— 켜면 「브랜드(해외 영문/국내 국문)+스타일명+품목+컬러코드+사이즈」로 생성 · 끄면 오더 상품명 그대로</span></span>
+    </label>
     <div class="tab-nav">
       <div></div>
       <button class="btn btn-primary" onclick="switchTab(2)">다음 →</button>
@@ -1917,6 +1921,20 @@ function saveDbOverlay(){
   try {
     localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(dbOverlay));
   } catch(e){ console.warn('DB overlay 저장 실패:', e); alert('저장 실패: 브라우저 저장공간 부족할 수 있어요'); }
+}
+
+// 상품명 자동 조합 옵션(① 화면 체크박스) 저장 — 다음에 열어도 선택 유지
+function saveCombineName(){
+  const cb = document.getElementById('optCombineName');
+  if(!cb) return;
+  dbOverlay.combineName = cb.checked;
+  saveDbOverlay();
+}
+// 저장된 선택을 체크박스에 복원 (기본값: 켜짐)
+function restoreCombineName(){
+  const cb = document.getElementById('optCombineName');
+  if(!cb) return;
+  cb.checked = (dbOverlay.combineName !== false);   // 저장 안 했으면 기본 ON
 }
 
 // DATA.brands에 dbOverlay.brands를 머지 — 같은 약자면 오버라이드, 새 약자는 추가
@@ -3304,6 +3322,9 @@ function init(){
   document.getElementById('year').oninput = e => { state.common.year = parseInt(e.target.value) || 2026; scheduleSave(); };
   document.getElementById('expectedDate').oninput = e => { state.common.expectedDate = e.target.value; scheduleSave(); };
   document.getElementById('currency').onchange = e => { state.common.currency = e.target.value; scheduleSave(); };
+
+  // 상품명 자동 조합 옵션 복원 (저장된 선택 유지, 기본 ON)
+  restoreCombineName();
 
   // 파일 업로드
   setupFileUpload('uploadArea','fileInput', handleOfferFile);
@@ -5223,6 +5244,8 @@ function generatePreview(){
   // 같은 (브랜드+자재그룹뒤2자+연도시즌+성별) 키를 가진 변형은 같은 순서코드 공유? 아니면 각자 다른?
   // 사용자 결정: 스타일당 1개 (스타일 = origCode 단위)
   const styleSerials = {};  // {origCode: serial}
+  // 상품명 조합 옵션(① 화면 체크박스): 켜면 자동 조합, 끄면 오더 상품명 그대로
+  const _combineName = (document.getElementById('optCombineName') ? document.getElementById('optCombineName').checked : true);
   const output = [];
   selected.forEach(v => {
     const it = v.materialGroup.slice(4,6);
@@ -5253,10 +5276,22 @@ function generatePreview(){
       code = (c.brand.abbr||'??') + it + ys + g + pad3(serial) + monthCode + colorCode + sizeCode;
     }
 
+    // 상품명 조합: 브랜드(해외=영문/국내=국문) + 스타일명 + MC품목(한글) + 컬러(변환) + 사이즈(변환)
+    const _isDom = !!(c.vendor && c.vendor.isDomestic);
+    const _brandNm = _isDom
+      ? (String(c.brand.name||'').replace(/\s*\([^)]*\)\s*$/, '').trim() || c.brand.eng || c.brand.abbr || '')
+      : (c.brand.eng || c.brand.name || c.brand.abbr || '');
+    const _mcEntry = DATA.matgrp.find(m => m.code === v.materialGroup);
+    const _mcItem = _mcEntry ? String(_mcEntry.name||'').split('_').pop().trim() : '';
+    const builtName = [_brandNm, (v.productName||''), _mcItem, colorCode, sizeCode]
+        .map(s => String(s||'').trim()).filter(Boolean).join(' ');
+    // 옵션 OFF면 오더 상품명 그대로, ON이면 자동 조합
+    const nameOut = _combineName ? builtName : String(v.productName||'').trim();
+
     output.push({
       상품코드: code,
-      '상품명(한글)': v.productName,
-      '상품명(영문)': v.productName,
+      '상품명(한글)': nameOut,
+      '상품명(영문)': nameOut,
       '자재그룹(MC)': v.materialGroup,
       공급업체: c.vendor.code,
       오리지널브랜드: c.brand.code,
@@ -5276,7 +5311,7 @@ function generatePreview(){
       'MRP 유형': 'RP',
       공급처: 2,
       저장조건: '01',
-      영수증텍스트: v.productName,
+      영수증텍스트: nameOut,
       칼라: v.color,
       사이즈: v.sizeValue,
       'MDP 유형': 'H090',

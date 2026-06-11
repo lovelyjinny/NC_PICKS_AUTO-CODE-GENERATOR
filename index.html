@@ -1922,12 +1922,35 @@ function analyzeOffer(variants, opt){
 }
 
 // 브랜드별 학습 매핑 조회
+// 브랜드별 내장 컬러 시드 — 자체 컬러코드(숫자 등)를 쓰는 브랜드용. 사용자 학습(dbOverlay.brandColors)이 우선.
+//  나이키(NI): 3자리 컬러코드 → 이랜드 2자리. 2026-06-10 웹조사 기반(대부분 컬러웨이 확인, 8개는 나이키 코드규칙 추정).
+const BRAND_COLOR_SEED = {
+  'NI': {
+    '010':'09','100':'00','370':'54','133':'71','101':'00','104':'91','103':'00','001':'09','300':'90','400':'60','224':'34','102':'00',
+    '247':'45','799':'30','700':'31','652':'17','366':'50','045':'09','478':'78','005':'03','111':'71','203':'34','474':'62','464':'60',
+    '121':'00','110':'94','338':'50','281':'26','043':'03','223':'28','053':'03','077':'01','095':'92','324':'50','410':'78','237':'28',
+    '200':'45','320':'45','030':'09','222':'47','063':'07','429':'60','663':'10','072':'03','634':'14','643':'20','504':'80','071':'07',
+    '361':'47','091':'06','105':'00','004':'09','003':'92','002':'09','051':'34','050':'05','068':'07','065':'03','025':'45','060':'07',
+    '013':'09','011':'09','420':'60','710':'30','036':'09','113':'91','601':'10','600':'11','500':'83','838':'12','006':'09','106':'00'
+  }
+};
 function getBrandColorMapping(brandAbbr, rawColor){
   if(!brandAbbr || !rawColor) return null;
-  const m = (dbOverlay.brandColors||{})[brandAbbr.toUpperCase()];
-  if(!m) return null;
-  const key = String(rawColor).trim().toUpperCase();
-  return m[key] || m[String(rawColor).trim()] || null;
+  const abbr = brandAbbr.toUpperCase();
+  const t = String(rawColor).trim();
+  const tryMap = (m) => {
+    if(!m) return null;
+    if(m[t.toUpperCase()]) return m[t.toUpperCase()];
+    if(m[t]) return m[t];
+    // 숫자 컬러코드: 엑셀에서 앞자리 0 유실 대비(10 ↔ 010 양쪽 시도)
+    if(/^\d{1,3}$/.test(t)){
+      const p3 = t.padStart(3,'0'); if(m[p3]) return m[p3];
+      const noz = String(parseInt(t,10)); if(m[noz]) return m[noz];
+    }
+    return null;
+  };
+  // 사용자 학습 우선 → 내장 브랜드 시드
+  return tryMap((dbOverlay.brandColors||{})[abbr]) || tryMap(BRAND_COLOR_SEED[abbr]) || null;
 }
 function setBrandColorMapping(brandAbbr, rawColor, code){
   if(!brandAbbr || !rawColor || !code) return;

@@ -1892,13 +1892,15 @@ function analyzeOffer(variants, opt){
   if(sizeSamples.length === 0){
     sizeStyle = '없음';
   } else {
-    const isKids = sizeSamples.some(s => /^\d\s*\/\s*(\d{2,3}|free)$/i.test(s)) || sizeSamples.some(s => /^(8\d|9\d|1[0-6]\d)$/.test(s) );
+    const isKidsMatrix = sizeSamples.some(s => /^\d\s*\/\s*(\d{2,3}|free)$/i.test(s));  // "0/80" N/CM 형식
     const isAlpha = sizeSamples.some(s => /^(XS|S|M|L|XL|XXL|2XL|3XL|FREE|F|OS)$/i.test(s));
     const isShoe = sizeSamples.some(s => /^2[2-9]\d$|^3[0-1]\d$/.test(s)); // 220~319
+    const isNumeric = sizeSamples.some(s => /^(0\d\d|1[0-6]\d|\d{2})$/.test(s)); // 의류 호수(0xx·100~169·2자리)
     const cats = [];
-    if(isKids) cats.push('키즈 호수');
-    if(isAlpha) cats.push('알파벳(XS~XL)');
+    if(isKidsMatrix) cats.push('키즈 호수(N/CM)');
     if(isShoe) cats.push('신발 호수');
+    if(isNumeric && !isKidsMatrix) cats.push('숫자 호수');
+    if(isAlpha) cats.push('알파벳(XS~XL)');
     sizeStyle = cats.length ? cats.join('+') : '기타/숫자';
   }
   const sizeLayout = (opt.sizeMode === 'matrix') ? '매트릭스(가로 펼침)' : (opt.sizeMode === 'single' ? '단일 컬럼' : '없음');
@@ -3965,11 +3967,23 @@ async function handleOfferFile(file){
     let counterOfferCol = -1;
     for(let i=0;i<headers.length;i++){ if((headers[i]||'').includes('역제안가')){ counterOfferCol=i; break; } }
     // 총금액 컬럼 (역산용) — '금액' 또는 'TOTAL ...PRICE'/'AMOUNT', 단 RRP(시중가)는 제외
+    // 우선순위: 할인/실판매/매입 등 '실거래(net) 금액' > 일반 '금액'(정가×수량인 경우가 있어 후순위)
+    const _amtMatch = (h)=> (h.includes('금액') || h.includes('AMOUNT') || (h.includes('TOTAL') && h.includes('PRICE')));
+    const _amtNet   = (h)=> (h.includes('할인') || h.includes('실판매') || h.includes('실매입') || h.includes('매입') || h.includes('정산') || h.includes('NET'));
     let amountCol = -1;
+    // 1차: 할인판매금액·실매입금액 등 net 금액 우선 (정가 총액보다 실거래액이 구매가에 가까움)
     for(let i=0;i<headers.length;i++){
       const h=(headers[i]||'').toUpperCase();
       if(h.includes('RRP')) continue;
-      if(h.includes('금액') || h.includes('AMOUNT') || (h.includes('TOTAL') && h.includes('PRICE'))){ amountCol=i; break; }
+      if(_amtMatch(h) && _amtNet(h)){ amountCol=i; break; }
+    }
+    // 2차: 없으면 일반 금액 컬럼
+    if(amountCol < 0){
+      for(let i=0;i<headers.length;i++){
+        const h=(headers[i]||'').toUpperCase();
+        if(h.includes('RRP')) continue;
+        if(_amtMatch(h)){ amountCol=i; break; }
+      }
     }
     // 총수량 컬럼 (역산용) — '수량'/'합계'/'TOTAL QTY'
     let qtyTotalCol = -1;

@@ -2199,16 +2199,26 @@ function setPgGenderMap(brandAbbr, mapObj){
   saveDbOverlay();
 }
 
-// 성별 기본 구매그룹 (브랜드 학습값이 없을 때 적용). 요청: 여성→OIA
-const GENDER_PG_DEFAULT = { 'W':'OIA' };
+// 성별 기본 구매그룹: 여성→OIA, 남성→OBA, 아동→OFA (MC 2번째 글자 W/M/K)
+const GENDER_PG_DEFAULT = { 'W':'OIA', 'M':'OBA', 'K':'OFA' };
 // 잡화 MC 판별: 자재그룹명(풀패스)에 '잡화' 포함 (예: 남성_잡화_벨트, 캐릭터_잡화_가방)
 function isMiscMc(mc){
   if(!mc) return false;
   const e = DATA.matgrp.find(m => m.code === mc);
   return !!(e && String(e.name||'').includes('잡화'));
 }
-// 각 행의 구매그룹 자동 채움. 우선순위: 잡화 MC→OCA > 브랜드 학습(성별) > 성별 기본값(W→OIA). 수기값은 보존.
-// 반환: { multiCandidate, gendersPresent:[..], missing:[성별 코드..(매핑 없는 것)], filled }
+// 한 행의 자동 구매그룹 결정
+//  · 여성(W) → OIA 무조건  · 아동(K) → OFA 무조건(잡화/ACC여도)
+//  · 그 외(남성·캐릭터·리빙 등) 잡화 → OCA  · 남성(M) 비잡화 → OBA  · 나머지 → 브랜드 학습값
+function autoPgForRow(v, map){
+  const g = rowGender(v);
+  if(g === 'K') return 'OFA';                    // 아동: 무조건 OFA (잡화/AC여도)
+  if(isMiscMc(v.materialGroup)) return 'OCA';    // 여성·남성·기타: 잡화(AC) → OCA (잡화 우선)
+  if(GENDER_PG_DEFAULT[g]) return GENDER_PG_DEFAULT[g];   // 여성→OIA, 남성→OBA
+  return (g && map && map[g]) || '';             // 그 외 성별: 브랜드 학습값
+}
+// 각 행의 구매그룹 자동 채움. 수기값(_pgAuto=false)은 보존.
+// 반환: { multiCandidate, gendersPresent:[..], missing:[성별 코드..(규칙 없는 것)], filled }
 function applyPgByGender(){
   const b = state.common.brand;
   const res = { multiCandidate:false, gendersPresent:[], missing:[], filled:0 };
@@ -2220,15 +2230,12 @@ function applyPgByGender(){
   state.variants.forEach(v => {
     const g = rowGender(v);                 // 오더 성별 우선(MC 비어도 인식)
     if(g) present[g] = true;
-    let pg = '';
-    if(isMiscMc(v.materialGroup)) pg = 'OCA';                 // 잡화 → OCA (성별 무관, 최우선)
-    else if(g && map[g]) pg = map[g];                          // 브랜드 학습 매핑
-    else if(g && GENDER_PG_DEFAULT[g]) pg = GENDER_PG_DEFAULT[g];  // 성별 기본값(W→OIA)
+    const pg = autoPgForRow(v, map);
     if(pg && (!v.pg || v._pgAuto)){ v.pg = pg; v._pgAuto = true; res.filled++; }
   });
   res.gendersPresent = Object.keys(present);
-  // 매핑·기본값 둘 다 없는 성별만 '미정'(다이얼로그 대상)
-  res.missing = res.gendersPresent.filter(g => !map[g] && !GENDER_PG_DEFAULT[g]);
+  // 성별 기본값·브랜드 매핑 둘 다 없는 성별만 '미정'(다이얼로그 대상)
+  res.missing = res.gendersPresent.filter(g => !GENDER_PG_DEFAULT[g] && !map[g]);
   return res;
 }
 
@@ -2253,8 +2260,8 @@ function openPgGenderDialog(genders){
     return '<b>'+esc(p)+'</b>'+(g?' ('+esc(g.name)+')':'');
   }).join('  ·  ');
   const map = getPgGenderMap(b.abbr);
-  // 브랜드 후보 + 공통 추가(OIA 여성·OCA 잡화)를 옵션으로 (요청: W에 OIA 선택 가능)
-  const optCands = [...new Set([...candidates, 'OIA', 'OCA'])];
+  // 브랜드 후보 + 공통 추가(여성 OIA·남성 OBA·아동 OFA·잡화 OCA)를 옵션으로
+  const optCands = [...new Set([...candidates, 'OIA', 'OBA', 'OFA', 'OCA'])];
   const optHtml = sel => '<option value="">— 선택 안 함 —</option>' + optCands.map(p => {
     const g = (DATA.pggroups||[]).find(x => x.code === p);
     return '<option value="'+esc(p)+'" '+(sel===p?'selected':'')+'>'+esc(p)+(g?' · '+esc(g.name):'')+'</option>';

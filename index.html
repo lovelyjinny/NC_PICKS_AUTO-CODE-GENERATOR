@@ -5543,6 +5543,22 @@ function generatePreview(){
     });
   });
 
+  // ===== 같은 상품 자동 합치기 (수량 합산) =====
+  // 인보이스에서 같은 상품(상품코드·오리지널코드·컬러·사이즈가 동일)이 수량 쪼개져 여러 줄로 들어온 경우 → 1줄로 통합, 수량은 더함
+  let _mergedRows = 0;
+  {
+    const _seen = {};
+    const _merged = [];
+    output.forEach(r => {
+      const k = [r['상품코드'], r['오리지널코드']||'', r['칼라']||'', r['사이즈']||''].join('|');
+      if(_seen[k]){
+        _seen[k]['예상발주수량'] = (parseInt(_seen[k]['예상발주수량'])||0) + (parseInt(r['예상발주수량'])||0);
+        _mergedRows++;
+      } else { _seen[k] = r; _merged.push(r); }
+    });
+    if(_mergedRows > 0){ output.length = 0; _merged.forEach(r => output.push(r)); }
+  }
+
   // ===== 코드 충돌 검사: 서로 다른 상품(오리지널코드/컬러/사이즈)이 같은 상품코드로 나오면 경고 =====
   // (대부분 컬러가 같은 코드로 변환되는 경우 — 예: BLUE와 S/BLUE가 둘 다 60)
   const _codeGroups = {};
@@ -5601,7 +5617,8 @@ function generatePreview(){
   const st = document.getElementById('genStatus');
   st.style.display='block';
   st.classList.remove('error');
-  st.textContent = '✓ '+output.length+'개 코드 미리보기 생성 완료. 결과를 확인하고 ② 엑셀 다운로드를 눌러 주세요.';
+  st.textContent = '✓ '+output.length+'개 코드 미리보기 생성 완료. 결과를 확인하고 ② 엑셀 다운로드를 눌러 주세요.'
+    + (_mergedRows > 0 ? '  (같은 상품 '+_mergedRows+'줄을 수량 합산해 합쳤어요)' : '');
 }
 
 function renderPreviewSummary(s){

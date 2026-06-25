@@ -5274,7 +5274,14 @@ const COLOR_ALIAS = {
   '에크루':'71','누드':'34','피스타치오':'41','연두':'41',
 };
 
+// 회사 색상코드 레인지에 없는 코드 보정: 05(MELANGE GREY) → 01(LIGHT GREY)
+const COLOR_REMAP = { '05':'01' };
+// 변환 결과에 보정 적용 (③ 표·상품코드·최종출력 모두 동일하게)
 function convertColor(name, brandAbbr){
+  const c = convertColorRaw(name, brandAbbr);
+  return COLOR_REMAP[c] || c;
+}
+function convertColorRaw(name, brandAbbr){
   if(!name) return '???';
   const raw = String(name).trim();
   if(!raw) return '???';
@@ -5637,8 +5644,8 @@ function renderPreviewTable(output){
     {key:'구매그룹', label:'구매그룹'},
     {key:'연도', label:'연도'},
     {key:'월', label:'월'},
-    {key:'칼라', label:'컬러'},
-    {key:'사이즈', label:'사이즈'},
+    {key:'칼라(변환)', label:'컬러'},
+    {key:'사이즈(변환)', label:'사이즈'},
     {key:'구매가', label:'구매가', cls:'num-cell'},
     {key:'판매가', label:'판매가', cls:'num-cell'},
     {key:'예상발주수량', label:'발주수량', cls:'num-cell'},
@@ -5703,17 +5710,29 @@ function downloadGeneratedExcel(){
   });
   const styleLeftAlt = Object.assign({}, styleLeft, { fill:{fgColor:{rgb:'FFFAF8F4'}} });
 
-  // 컬럼 키 → 스타일 매핑
-  const numCols = new Set(['구매가','판매가','MD입력시중가','1차마크다운가격','2차마크다운가격','예상발주수량','연도']);
+  // 컬럼 키 → 스타일 매핑 (연도는 쉼표 제거 위해 numCols에서 제외)
+  const numCols = new Set(['구매가','판매가','오리지널가격','1차마크다운가격','2차마크다운가격','예상발주수량']);
   const codeCols = new Set(['상품코드','오리지널코드']);
   const leftCols = new Set(['상품명(한글)','상품명(영문)','영수증텍스트']);
 
-  // 헤더(키 순서) 추출
-  const headers = Object.keys(output[0] || {});
+  // SAP 업로드 양식 42컬럼: [표시헤더, 출력row 키] (통화 헤더 2개 동일 · 칼라/사이즈=변환코드 · 유사MC/오리지널연도=공란)
+  const SAP_COLS = [
+    ['상품코드','상품코드'],['상품명(한글)','상품명(한글)'],['상품명(영문)','상품명(영문)'],['자재그룹(MC)','자재그룹(MC)'],
+    ['공급업체','공급업체'],['오리지널브랜드','오리지널브랜드'],['MD사번','MD사번'],['사입구분','사입구분'],['구매그룹','구매그룹'],
+    ['계절범주','계절범주'],['연도','연도'],['월','월'],['세금분류','세금분류'],['세금코드','세금코드'],['오더단위','오더단위'],
+    ['구매가','구매가'],['통화','통화(구매)'],['판매가','판매가'],['통화','통화(판매)'],['MRP 유형','MRP 유형'],['공급처','공급처'],
+    ['저장조건','저장조건'],['영수증텍스트','영수증텍스트'],['칼라','칼라(변환)'],['사이즈','사이즈(변환)'],['MDP 유형','MDP 유형'],
+    ['상품기획','상품기획'],['소싱담당','소싱담당'],['예상발주수량','예상발주수량'],['예상입고일','예상입고일'],['출고요청일','출고요청일'],
+    ['유사MC',null],['분배담당','분배담당'],['사사전원가','사사전원가'],['생산국','생산국'],['상품유형','상품유형'],['오리지널코드','오리지널코드'],
+    ['오리지널가격','MD입력시중가'],['계획MDP(판매기간)','계획MDP(판매기간)'],['1차마크다운가격','1차마크다운가격'],['2차마크다운가격','2차마크다운가격'],['오리지널연도',null]
+  ];
+  // 1·2행 고정: SAP 기준 헤더 + 예시행(절대 변경 금지). 생성 데이터는 3행부터.
+  const SAP_ROW2 = ['BTNPK11K501001M','타미 클래식핏','DIOR ADDICT LIPSTICK 681','PKPKA1',302050,'B001',10448395,'0000100005','BGA','0001',2026,6,1,30,'PC',25,'USD',39900,'KRW','RP ','2','01','디올립스틱(영수증)','20 ','XL','H090',10448395,10448395,3000,20260630,20260630,'RHFARW','S','','FR','A','A271',500,6,500,1000,''];
 
-  // AOA 변환
-  const aoa = [headers];
-  output.forEach(row => aoa.push(headers.map(h => row[h])));
+  const headers = SAP_COLS.map(c => c[0]);
+  // AOA: 1행 헤더 + 2행 예시(고정) + 3행~ 생성 데이터
+  const aoa = [headers, SAP_ROW2];
+  output.forEach(row => aoa.push(SAP_COLS.map(c => c[1] ? row[c[1]] : '')));
   const ws = XLSX.utils.aoa_to_sheet(aoa);
 
   // 셀별 스타일 적용
@@ -5742,17 +5761,13 @@ function downloadGeneratedExcel(){
     }
   }
 
-  // 컬럼 너비 자동 조정
-  ws['!cols'] = headers.map(h => {
+  // 컬럼 너비 자동 조정 (aoa 기준)
+  ws['!cols'] = headers.map((h, ci) => {
     let maxLen = (h+'').length;
-    output.forEach(row => {
-      const v = row[h];
-      if(v !== null && v !== undefined){
-        const len = String(v).length;
-        if(len > maxLen) maxLen = len;
-      }
-    });
-    // 한글은 폭이 더 큼 — 영문 1, 한글 2로 환산
+    for(let ri = 1; ri < aoa.length; ri++){
+      const v = aoa[ri][ci];
+      if(v !== null && v !== undefined){ const len = String(v).length; if(len > maxLen) maxLen = len; }
+    }
     let wch = Math.min(Math.max(maxLen + 2, 8), 32);
     if(/[가-힣]/.test(h)) wch = Math.max(wch, 10);
     return { wch };
@@ -5761,9 +5776,9 @@ function downloadGeneratedExcel(){
   // 헤더 행 높이
   ws['!rows'] = [{ hpt: 32 }];
 
-  // 첫 행 고정
-  ws['!freeze'] = { xSplit:0, ySplit:1, topLeftCell:'A2', activePane:'bottomLeft', state:'frozen' };
-  ws['!views'] = [{ state:'frozen', ySplit:1, xSplit:0, topLeftCell:'A2' }];
+  // 상단 2행(헤더+예시) 고정
+  ws['!freeze'] = { xSplit:0, ySplit:2, topLeftCell:'A3', activePane:'bottomLeft', state:'frozen' };
+  ws['!views'] = [{ state:'frozen', ySplit:2, xSplit:0, topLeftCell:'A3' }];
 
   // 워크북 생성
   const wb = XLSX.utils.book_new();

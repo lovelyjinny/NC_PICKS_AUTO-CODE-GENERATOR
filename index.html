@@ -1088,8 +1088,8 @@ table.preview-tbl td.num-cell { text-align:right; font-variant-numeric:tabular-n
     <h3>컬러 매핑 한 번에 입력</h3>
     <span class="muted" id="bulkColorMapBrandInfo">-</span>
     <div class="hint" style="margin:10px 0 16px;">
-      도구가 추천한 매핑이 자동으로 채워져 있어요. 확인 후 잘못된 건 수정·삭제하고, <b>전체 저장</b>을 누르면 한 번에 학습됩니다.<br>
-      코드를 비우면 그 컬러는 매핑하지 않고 넘어가요.
+      각 컬러의 <b>색상명을 15개 중에서 고르면</b> 컬러코드가 자동으로 매칭돼요. 추천이 있으면 미리 선택돼 있으니 확인만 하세요. <b>전체 저장</b>을 누르면 한 번에 학습됩니다.<br>
+      색상명을 비우면(— 색상명 선택 —) 그 컬러는 매핑하지 않고 넘어가요(다음에 또 물어봐요).
     </div>
     <div style="max-height:55vh; overflow:auto; border:1px solid var(--line); border-radius:10px;">
       <table class="data-tbl" id="bulkColorMapTbl"></table>
@@ -3272,30 +3272,27 @@ function openBulkColorMapModal(){
   const tbl = document.getElementById('bulkColorMapTbl');
   let html = `<thead><tr>
     <th style="width:38px">#</th>
-    <th class="auto" style="width:24%">원본값 · 상품명 샘플</th>
+    <th class="auto" style="width:32%">원본값 · 상품명 샘플</th>
     <th class="auto" style="width:55px">건수</th>
-    <th class="input" style="width:80px">코드</th>
-    <th class="auto" style="width:140px">컬러표 이름</th>
-    <th class="auto">추천 (클릭으로 적용)</th>
+    <th class="input" style="width:170px">색상명 (15개 중 선택)</th>
+    <th class="auto" style="width:70px">코드(자동)</th>
     <th class="auto" style="width:40px"></th>
   </tr></thead><tbody>`;
   items.forEach((it, i) => {
-    const codeName = it.code ? (DATA.colors.find(c=>c.code===it.code)||{}).name||'' : '';
     const samplesHtml = it.samples.length
       ? `<div style="font-size:11px;color:var(--muted);margin-top:2px;">예: ${it.samples.map(s => esc(s.length>30?s.substring(0,30)+'…':s)).join(' / ')}</div>`
       : '';
-    // 추천 칩
-    const chipsHtml = it.candidates.length > 0
-      ? it.candidates.map(c => `<button class="sugg-chip" onclick="applySuggestion(this, '${esc(it.raw)}', '${esc(c.code)}')">${esc(c.code)} ${esc(c.name||'')}</button>`).join('')
-      : '<span style="color:var(--muted-soft);font-size:12px;">추천 없음 — 직접 입력해 주세요</span>';
-
+    // 추천 후보가 있으면 15대표색으로 환산해 기본 선택
+    const sugCode = (it.candidates[0] && it.candidates[0].code) || '';
+    const defCode = sugCode ? (COLOR_CONSOLIDATE[sugCode] || sugCode) : '';
+    const opts = '<option value="">— 색상명 선택 —</option>' +
+      STD15.map(s => `<option value="${s[1]}" ${s[1]===defCode?'selected':''}>${esc(s[0])} (${s[1]})</option>`).join('');
     html += `<tr data-raw="${esc(it.raw)}">
       <td>${i+1}</td>
       <td style="text-align:left; padding-left:14px;"><b>${esc(it.raw)}</b>${samplesHtml}</td>
       <td>${it.n}</td>
-      <td><input type="text" maxlength="2" value="${esc(it.code)}" placeholder="--" class="bulk-color-input" data-raw="${esc(it.raw)}" oninput="updateBulkColorName(this)" style="text-align:center; font-weight:bold; color:var(--bronze-deep);"></td>
-      <td class="bulk-color-name" style="text-align:left; padding-left:14px; color:var(--muted); font-size:12px;">${esc(codeName)}</td>
-      <td class="sugg-cell" style="text-align:left; padding:6px 8px;">${chipsHtml}</td>
+      <td><select class="bulk-color-sel" onchange="updateBulkColorCode(this)" style="width:100%;">${opts}</select></td>
+      <td class="bulk-color-code" style="text-align:center; font-weight:bold; color:var(--bronze-deep);">${defCode||'-'}</td>
       <td><button onclick="this.closest('tr').remove()" style="background:transparent; border:0; cursor:pointer; color:#B91C1C;" title="이 행 삭제">✕</button></td>
     </tr>`;
   });
@@ -3305,27 +3302,11 @@ function openBulkColorMapModal(){
   document.getElementById('modalBulkColorMap').classList.add('show');
 }
 
-function applySuggestion(btn, raw, code){
-  const tr = btn.closest('tr');
-  const input = tr.querySelector('.bulk-color-input');
-  input.value = code;
-  updateBulkColorName(input);
-}
-
-function updateBulkColorName(input){
-  const code = (input.value || '').trim();
-  const tr = input.closest('tr');
-  const nameCell = tr.querySelector('.bulk-color-name');
-  if(!code){ nameCell.textContent = ''; return; }
-  if(!/^\d{2}$/.test(code)){ nameCell.textContent = '⚠ 2자리 숫자 필요'; nameCell.style.color = '#B91C1C'; return; }
-  const found = DATA.colors.find(c => c.code === code);
-  if(found){
-    nameCell.textContent = found.name || '';
-    nameCell.style.color = 'var(--bronze-deep)';
-  } else {
-    nameCell.textContent = '(컬러표에 없는 코드)';
-    nameCell.style.color = '#B91C1C';
-  }
+// 색상명 드롭다운 선택 → 코드 자동 표시
+function updateBulkColorCode(sel){
+  const tr = sel.closest('tr');
+  const cell = tr.querySelector('.bulk-color-code');
+  if(cell) cell.textContent = sel.value || '-';
 }
 
 function saveBulkColorMap(){
@@ -3337,9 +3318,9 @@ function saveBulkColorMap(){
   let saved = 0, skipped = 0, invalid = 0;
   rows.forEach(tr => {
     const raw = tr.dataset.raw;
-    const codeInput = tr.querySelector('.bulk-color-input');
-    const code = (codeInput.value || '').trim();
-    if(!code){ skipped++; return; }
+    const sel = tr.querySelector('.bulk-color-sel');
+    const code = (sel && sel.value || '').trim();
+    if(!code){ skipped++; return; }        // 색상명 미선택 → 건너뜀(다음에 또 물어봄)
     if(!/^\d{2}$/.test(code)){ invalid++; return; }
     setBrandColorMapping(abbr, raw, code);
     saved++;
@@ -5297,11 +5278,30 @@ const COLOR_ALIAS = {
 };
 
 // 회사 색상코드 레인지에 없는 코드 보정: 05(MELANGE GREY) → 01(LIGHT GREY)
-const COLOR_REMAP = { '05':'01' };
-// 변환 결과에 보정 적용 (③ 표·상품코드·최종출력 모두 동일하게)
+// 회사 표준 15대표색 (OPR 일재고 표준과 동일). 어떤 색이든 이 15개 안으로만 떨어짐.
+const STD15 = [['화이트','00'],['그레이','03'],['블랙','09'],['레드','10'],['핑크','11'],['오렌지','20'],['브라운','28'],['옐로우','30'],['베이지','34'],['카키','45'],['그린','50'],['블루','60'],['네이비','78'],['퍼플','80'],['믹스','99']];
+// 100색 코드 → 15대표색 압축 (OPR classify_color_standard 기반 + 애매 10색 사용자확정). 멜란지(05)→그레이(03).
+const COLOR_CONSOLIDATE = {
+  '01':'03','02':'03','04':'03','05':'03','06':'03','07':'03','08':'03','16':'03','92':'03','93':'03','97':'03',
+  '12':'11','13':'11','14':'11','15':'11','23':'11','24':'11',
+  '17':'10','18':'10','19':'10',
+  '21':'20','22':'20','25':'20',
+  '26':'28','27':'28','29':'28','36':'28','39':'28','85':'28',
+  '31':'30','32':'30','37':'30','40':'30','98':'30',
+  '33':'34','35':'34','38':'34','42':'34',
+  '43':'45','49':'45',
+  '41':'50','44':'50','46':'50','47':'50','48':'50','51':'50','52':'50','54':'50','58':'50','59':'50','73':'50','74':'50','90':'50',
+  '53':'60','61':'60','62':'60','63':'60','64':'60','65':'60','66':'60','67':'60','68':'60','70':'60','89':'60',
+  '55':'78','56':'78','57':'78','79':'78',
+  '71':'00','72':'00','91':'00','94':'00',
+  '75':'80','81':'80','82':'80','83':'80','84':'80','87':'80','88':'80',
+  '69':'99','76':'99','77':'99','86':'99','95':'99','96':'99'
+};
+// 변환 결과를 15대표색으로 압축 (③ 표·상품코드·최종출력 모두 동일). 미해결(???)은 그대로 → 팝업 대상.
 function convertColor(name, brandAbbr){
   const c = convertColorRaw(name, brandAbbr);
-  return COLOR_REMAP[c] || c;
+  if(c === '???') return '???';
+  return COLOR_CONSOLIDATE[c] || c;   // 이미 15대표색이면 그대로
 }
 function convertColorRaw(name, brandAbbr){
   if(!name) return '???';

@@ -4053,15 +4053,22 @@ async function handleOfferFile(file){
     }
     colMap.gender = genderCol;
 
-    // 오더에 'MD입력시중가'·'월(계절월)'이 이미 채워져 있으면 그대로 읽음 (계산보다 우선)
-    let retailDirectCol = -1, seasonMonthCol = -1;
+    // 오더에 'MD입력시중가'·'월(계절월)'·'자재그룹(MC)'·'구매그룹'·'판매가'가 이미 채워져 있으면 그대로 읽음 (자동/수기보다 우선)
+    let retailDirectCol = -1, seasonMonthCol = -1, mcDirectCol = -1, pgDirectCol = -1, sellDirectCol = -1;
     for(let i=0;i<headers.length;i++){
       const h = String(headers[i]||'').trim();
+      const hu = h.toUpperCase();
       if(retailDirectCol < 0 && h.includes('시중가')) retailDirectCol = i;   // MD입력시중가 / 시중가
       if(seasonMonthCol < 0 && h.includes('계절월')) seasonMonthCol = i;      // 월(계절월)
+      if(mcDirectCol < 0 && (h.includes('자재그룹') || hu === 'MC' || hu === 'MC코드' || h.includes('자재 그룹'))) mcDirectCol = i;  // 자재그룹(MC)
+      if(pgDirectCol < 0 && h.includes('구매그룹')) pgDirectCol = i;          // 구매그룹
+      if(sellDirectCol < 0 && h.includes('판매가') && !h.includes('구매') && !h.includes('시중')) sellDirectCol = i;  // 판매가(구매가/시중가 제외)
     }
     colMap.retailDirect = retailDirectCol;
     colMap.seasonMonth = seasonMonthCol;
+    colMap.mcDirect = mcDirectCol;
+    colMap.pgDirect = pgDirectCol;
+    colMap.sellDirect = sellDirectCol;
 
     let backCalcCount = 0;
     // 행에서 구매가 산출: ①역제안가 → ②총금액÷수량 역산 → ③기타 직접단가
@@ -4360,6 +4367,11 @@ async function handleOfferFile(file){
         else if(_vatFlag === 'V-'){ _buyFinal = _rawBuy; }
         else { _buyVatUnknown = true; }   // 표기 없음 → 담당자 확인 필요
       }
+      // 오더에 자재그룹(MC)·구매그룹·판매가가 이미 채워져 있으면 그대로 읽음 (자동/수기보다 우선)
+      const _mcFromFile = mcDirectCol>=0 ? String(row[mcDirectCol]||'').trim().toUpperCase().replace(/\s/g,'') : '';
+      const _pgFromFile = pgDirectCol>=0 ? String(row[pgDirectCol]||'').trim().toUpperCase().replace(/\s/g,'') : '';
+      const _sellFromFile = sellDirectCol>=0 ? (parseFloat(row[sellDirectCol])||0) : 0;
+      const _brandSinglePg = (function(){ const l = state.common.brand ? parsePgList(state.common.brand.pg) : []; return l.length === 1 ? l[0] : ''; })();
       const base = {
         origCode: String(row[colMap.origCode]||'').trim(),
         productName: pname,
@@ -4375,10 +4387,17 @@ async function handleOfferFile(file){
         itemCategory: rawItem,     // 오퍼시트 원본값 (표에 표시)
         itemCode: itemCode,        // 매핑된 2자리 코드 (MC 마지막 2자리로 사용)
         sizeValue: '', qty: 0,
-        materialGroup: '',
+        materialGroup: _mcFromFile,                                            // 오더에 MC 있으면 그대로
+        _mcFromFile: !!_mcFromFile,
         seasonMonth: seasonMonthCol>=0 ? normSeasonMonth(row[seasonMonthCol]) : '',   // 오더에 월(계절월) 있으면 읽음
-        pg: (function(){ const l = state.common.brand ? parsePgList(state.common.brand.pg) : []; return l.length === 1 ? l[0] : ''; })(),  // 후보 1개면 미리 채움, 여러 개면 성별별/수기 채움
-        sellPrice: 0, retailPrice: 0, markdown1: 0, markdown2: 0,
+        pg: _pgFromFile || _brandSinglePg,                                     // 오더에 구매그룹 있으면 그대로, 없으면 후보1개 미리채움
+        _pgAuto: _pgFromFile ? false : undefined,                             // 파일값이면 자동채움이 안 덮게 잠금
+        _pgFromFile: !!_pgFromFile,
+        sellPrice: _sellFromFile,                                             // 오더에 판매가 있으면 그대로(없으면 0)
+        _sellFromFile: _sellFromFile > 0,
+        retailPrice: 0,
+        markdown1: _sellFromFile > 0 ? Math.round(_sellFromFile * 0.9) : 0,    // 판매가 있으면 마크다운 자동
+        markdown2: _sellFromFile > 0 ? Math.round(_sellFromFile * 0.8) : 0,
         selected: true,
       };
       if(!base.origCode) continue;
@@ -4473,6 +4492,9 @@ async function handleOfferFile(file){
       mapInfo.push('MD시중가=' + rname + (isDom ? ' 그대로(국내)' : ' × 환율 × 1.3, 천원반올림(해외)'));
     } else mapInfo.push('MD시중가=수기입력(원본 컬럼 없음)');
     if(colMap.seasonMonth>=0) mapInfo.push('월(계절월)=' + (headers[colMap.seasonMonth]||'?') + ' 그대로 읽음');
+    if(colMap.mcDirect>=0) mapInfo.push('자재그룹(MC)=' + (headers[colMap.mcDirect]||'?') + ' 오더에서 읽음');
+    if(colMap.pgDirect>=0) mapInfo.push('구매그룹=' + (headers[colMap.pgDirect]||'?') + ' 오더에서 읽음');
+    if(colMap.sellDirect>=0) mapInfo.push('판매가=' + (headers[colMap.sellDirect]||'?') + ' 오더에서 읽음(마크다운 자동)');
     if(sizeMatrixCols.length>0) mapInfo.push('사이즈매트릭스='+sizeMatrixCols.map(s=>s.label).join('/'));
     if(colMap.item>=0) mapInfo.push('아이템='+(headers[colMap.item]||'?')+(itemRecognizedCount>0?'(인식 '+itemRecognizedCount+'행)':''));
     else if(itemRecognizedCount>0) mapInfo.push('아이템=상품명에서 추출('+itemRecognizedCount+'행)');
